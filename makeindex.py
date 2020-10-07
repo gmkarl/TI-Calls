@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 
+from datetime import datetime
+from dateutil.parser import isoparse
 import sys
 
+import requests
+
 from git_annex_adapter.repo import GitAnnexRepo, AnnexedFileTree, AnnexedFile
-from git_annex_adapter.process import GitAnnexBatchJsonProcess
+from git_annex_adapter.process import GitAnnexBatchJsonProcess, Process
 
 class WhereIs:
 	def __init__(self, workdir):
@@ -23,6 +27,18 @@ class WhereIs:
 				if result['success'] != True:
 					raise Exception(result)
 				yield (result['key'], result['whereis'])
+class GitLog:
+	def __init__(self, workdir):
+		self.workdir = workdir
+	def file(self, path):
+		with Process(['git', 'log', '--oneline', '--no-abbrev-commit', path], self.workdir) as subproc:
+			while True:
+				line = subproc.readline(timeout = None)
+				if not line:
+					break
+				commit, log = line.split(' ', 1)
+				yield commit
+			
 
 from urllib.parse import urlparse
 from xml.etree import ElementTree as ET
@@ -30,53 +46,98 @@ import sys
 class Page:
 	def __init__(self):
 		self.html = ET.Element('html')
+		self.head = ET.Element('head')
+		self.html.append(self.head)
 		self.body = ET.Element('body')
 		self.html.append(self.body)
 		message = ET.Element('b')
-		message.text = 'These files are presently archived on the web.  I am working on storing them permanently on bsv, which costs money that I am short of and involves fixing some broken software.  If bsv is implemented it will be listed next to the files stored on it.'
-		self.body.append(message)
+		message.text = 'These files are presently archived on the web.  I am working on storing them permanently on bsv, which costs money that I am short of and involves fixing some broken software.  If bsv is implemented it will be listed next to the files that are stored on it, on a future version of this page.'
+		paragraph = ET.Element('p')
+		paragraph.append(message)
+		self.body.append(paragraph)
+		paragraph = ET.Element('p')
+		paragraph.text = 'This web address likely identifies this specific version of this page, and a new web address will be needed to find new versions.'
+		self.body.append(paragraph)
+		paragraph = ET.Element('p')
+		paragraph.text = 'Until we get bsv working again, most of the mirrors below are "skynet" mirrors so far, which are offering free storage.  These seem to work well but do not guarantee preservation of content and are all linked into the same one network.'
+		self.body.append(paragraph)
+		paragraph = ET.Element('p')
+		paragraph.text = 'If you are familiar with git-annex, the contents of this repository are the last file at the bottom.  You will want the one with the most recent date.'
+		self.body.append(paragraph)
 		self.table = ET.Element('table')
 		self.body.append(self.table)
-	def path(self, path):
-		pass
-	def file(self, path, name, key, locations):
+		self.files = {}
+	def urlgood(self, url):
+		try:
+			response = requests.head(url, timeout=1)
+			return response.ok
+		except requests.exceptions.RequestException:
+			return False
+	def file(self, path, name, date, key, locations):
 		tr = ET.Element('tr')
-		self.table.append(tr)
+		self.files[name] = tr
 		td = ET.Element('td')
-		td.text = path + '/' + name
+		td.text = path + name
 		tr.append(td)
 		td = ET.Element('td')
+		td.text = date.isoformat()
 		tr.append(td)
+		td = ET.Element('td')
+		td.text = ''
+		tr.append(td)
+		lastelem = None
 		for location in locations:
 			urls = location['urls']
 			if not urls:
 				continue
-			if not td.text:
-				td.text = location['description'] + ':'
-			else:
-				a.tail = location['description'] + ':'
+			count = 0
 			for url in location['urls']:
+				if url[0:4] != 'http' or not self.urlgood(url):
+					continue
+				count += 1
 				a = ET.Element('a', attrib={'href': url})
 				a.text = urlparse(url).netloc
+				a.tail = ' '
 				td.append(a)
+				lastelem = a
+			if count == 0:
+				continue
+			if not td.text:
+				td.text += location['description'] + ':'
+			else:
+				lastelem.tail += location['description'] + ':'
 	def render(self):
+		for file in sorted(self.files, reverse=True):
+			self.table.append(self.files[file])
 		if sys.version_info < (3,0,0):
 			ET.ElementTree(self.html).write(sys.stdout, encoding='utf-8', method='html')
 		else:
 			ET.ElementTree(self.html).write(sys.stdout, encoding='unicode', method='html')
 
-repo = GitAnnexRepo('.')
-whereiskey = WhereIs(repo.workdir).key
-page = Page()
+class CallRepo:
+	def __init__(self, workdir = '.'):
+		self.repo = GitAnnexRepo(workdir)
+		self.whereiskey = WhereIs(workdir).key
+		self.gitlogfile = GitLog(workdir).file
+		self.page = Page()
+	def process(self):
+		self._folder(self.repo.annex.get_file_tree())
+		self.page.render()
+	def _file(self, path, name, file):
+		# git log --online --no-abbrev-commit 'filename' # produces history where first space-separated-token is commit id
+		for commit in self.gitlogfile(path + name):
+			timestamp = self.repo[commit].commit_time
+			date = datetime.utcfromtimestamp(timestamp)
+			file = self.repo.annex.get_file_tree(commit)[path + name]
+			sys.stderr.write(path +  name + ' ' + file.key + '\n')
+			locations = self.whereiskey(file.key)
+			self.page.file(path, name, date, file.key, locations)
+	def _folder(self, tree, path = ''):
+		sys.stderr.write('Listing ' + path + '...\n')
+		for name, file in tree.items():
+			if isinstance(file, AnnexedFileTree):
+				self._folder(file, path + name + '/')
+			elif isinstance(file, AnnexedFile):
+				self._file(path, name, file)
 
-def folder(tree, path = ''):
-	sys.stderr.write('Listing ' + path + '...\n')
-	for name, file in tree.items():
-		subpath = path + name
-		if isinstance(file, AnnexedFileTree):
-			folder(file, subpath + '/')
-		elif isinstance(file, AnnexedFile):
-			locations = whereiskey(file.key)
-			page.file(path, name, file.key, locations)
-folder(repo.annex.get_file_tree())
-page.render()
+CallRepo().process()
