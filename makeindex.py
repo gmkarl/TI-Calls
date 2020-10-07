@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 
 from datetime import datetime
-from dateutil.parser import isoparse
+import dateutil.parser
 import sys
+
+import re
 
 import requests
 
@@ -51,7 +53,7 @@ class Page:
 		self.body = ET.Element('body')
 		self.html.append(self.body)
 		message = ET.Element('b')
-		message.text = 'These files are presently archived on the web.  I am working on storing them permanently on bsv, which costs money that I am short of and involves fixing some broken software.  If bsv is implemented it will be listed next to the files that are stored on it, on a future version of this page.'
+		message.text = 'The files linked below are presently archived on the web.  I am working on storing them permanently on bsv, which costs money that I am short of and involves fixing some broken software.  If bsv is implemented it will be listed next to the files that are stored on it, on a future version of this page.'
 		paragraph = ET.Element('p')
 		paragraph.append(message)
 		self.body.append(paragraph)
@@ -75,7 +77,15 @@ class Page:
 			return False
 	def file(self, path, name, date, key, locations):
 		tr = ET.Element('tr')
-		self.files[name] = tr
+		namedate = re.search('\d\d\d+-\d+-\d+-\d+:\d+:\d+', name)
+		if namedate:
+			namedate = name[namedate.start():namedate.end()]
+			namedate = dateutil.parser.parse(namedate).isoformat()
+		if not namedate:
+			namedate = name
+		if not namedate in self.files:
+			self.files[namedate] = []
+		self.files[namedate].append(tr)
 		td = ET.Element('td')
 		td.text = path + name
 		tr.append(td)
@@ -92,7 +102,7 @@ class Page:
 				continue
 			count = 0
 			for url in location['urls']:
-				if url[0:4] != 'http' or not self.urlgood(url):
+				if url[0:4] != 'http':# or not self.urlgood(url):
 					continue
 				count += 1
 				a = ET.Element('a', attrib={'href': url})
@@ -107,8 +117,9 @@ class Page:
 			else:
 				lastelem.tail += location['description'] + ':'
 	def render(self):
-		for file in sorted(self.files, reverse=True):
-			self.table.append(self.files[file])
+		for filename in sorted(self.files, reverse=True):
+			for version in self.files[filename]:
+				self.table.append(version)
 		if sys.version_info < (3,0,0):
 			ET.ElementTree(self.html).write(sys.stdout, encoding='utf-8', method='html')
 		else:
@@ -124,14 +135,27 @@ class CallRepo:
 		self._folder(self.repo.annex.get_file_tree())
 		self.page.render()
 	def _file(self, path, name, file):
-		# git log --online --no-abbrev-commit 'filename' # produces history where first space-separated-token is commit id
+		commits = []
 		for commit in self.gitlogfile(path + name):
 			timestamp = self.repo[commit].commit_time
 			date = datetime.utcfromtimestamp(timestamp)
 			file = self.repo.annex.get_file_tree(commit)[path + name]
-			sys.stderr.write(path +  name + ' ' + file.key + '\n')
-			locations = self.whereiskey(file.key)
-			self.page.file(path, name, date, file.key, locations)
+			# replace duplicates [todo: don't even store this in the commit history]
+			while len(commits) and (
+					commits[-1]['file'].key[:5] == 'URL--' or
+					commits[-1]['file'].key == file.key
+				):
+				commits.pop()
+			if len(commits) and file.key[:5] == 'URL--':
+				commits[0]['extra'] = file
+			else:
+				commits.append({'commit':commit, 'timestamp':timestamp, 'date':date, 'file':file})
+		for commit in commits:
+			sys.stderr.write(path +  name + ' ' + commit['file'].key + '\n')
+			locations = self.whereiskey(commit['file'].key)
+			if 'extra' in commit:
+				locations.extend(self.whereiskey(commit['extra'].key))
+			self.page.file(path, name, commit['date'], commit['file'].key, locations)
 	def _folder(self, tree, path = ''):
 		sys.stderr.write('Listing ' + path + '...\n')
 		for name, file in tree.items():
