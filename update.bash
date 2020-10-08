@@ -8,6 +8,7 @@ for feed in \
 	https://www.talkshoe.com/rss-targeted-individuals-ffchs.xml \
 	https://www.talkshoe.com/rss-osi-late-night-lounge.xml \
 	https://www.talkshoe.com/rss-electronic-harassmentorganized-stalking.xml \
+	https://www.republicbroadcastingarchives.org/category/frank-allen/feed/ \
 ; do
 	git annex importfeed --force --fast --template '${feedtitle}/${itempubdate}-${itempubhour}:${itempubminute}:${itempubsecond}-${itemtitle}${extension}' "$feed"
 done
