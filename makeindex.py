@@ -27,7 +27,8 @@ class WhereIs:
 				break
 			if 'command' in result and result['command'] == 'whereis':
 				if result['success'] != True:
-					raise Exception(result)
+                    result['command'] = 'whereis --json --all'
+					raise Exception(result, "This may be due to a git-annex remote error that displays only for this command line.")
 				yield (result['key'], result['whereis'])
 class GitLog:
 	def __init__(self, workdir):
