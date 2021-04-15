@@ -140,7 +140,10 @@ class CallRepo:
 		for commit in self.gitlogfile(path + name):
 			timestamp = self.repo[commit].commit_time
 			date = datetime.utcfromtimestamp(timestamp)
-			file = self.repo.annex.get_file_tree(commit)[path + name]
+			try:
+				file = self.repo.annex.get_file_tree(commit)[path + name]
+			except KeyError as ke:
+				print('Warning: ' + commit + ' in history of ' + path+name + ' but file not in tree')
 			# replace duplicates [todo: don't even store this in the commit history]
 			while len(commits) and (
 					commits[-1]['file'].key[:5] == 'URL--' or
